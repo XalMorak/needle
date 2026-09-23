@@ -1,0 +1,127 @@
+"""Run a local 13B GGUF model through llama.cpp.
+
+This module intentionally does not download weights at import time. Install
+llama.cpp separately (or pass --llama-cli/--llama-server), then run:
+
+    python scripts/run_13b.py chat --prompt "Привет"
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+DEFAULT_REPO = "TheBloke/Llama-2-13B-chat-GGUF"
+DEFAULT_FILE = "llama-2-13b-chat.Q4_K_M.gguf"
+
+
+def _download_model(repo: str, filename: str, cache_dir: Path) -> Path:
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:  # pragma: no cover - depends on optional install
+        raise SystemExit(
+            "Install the local dependencies first: pip install -r requirements-local.txt"
+        ) from exc
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = hf_hub_download(
+        repo_id=repo,
+        filename=filename,
+        repo_type="model",
+        cache_dir=str(cache_dir),
+    )
+    return Path(path)
+
+
+def _find_binary(value: str | None, names: tuple[str, ...]) -> str:
+    if value:
+        candidate = Path(value).expanduser()
+        if candidate.exists():
+            return str(candidate)
+        resolved = shutil.which(value)
+        if resolved:
+            return resolved
+        raise SystemExit(f"Cannot find executable: {value}")
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    raise SystemExit(
+        "llama.cpp was not found. Build it from https://github.com/ggml-org/llama.cpp "
+        "and put llama-cli/llama-server on PATH, or pass --llama-cli/--llama-server."
+    )
+
+
+def run_cli(args: argparse.Namespace) -> int:
+    model = _download_model(args.model_repo, args.model_file, Path(args.cache_dir))
+    binary = _find_binary(args.llama_cli, ("llama-cli", "main"))
+    command = [
+        binary,
+        "-m", str(model),
+        "-p", args.prompt,
+        "-n", str(args.max_tokens),
+        "-c", str(args.context),
+        "--temp", str(args.temperature),
+    ]
+    if args.gpu_layers is not None:
+        command += ["-ngl", str(args.gpu_layers)]
+    if args.seed is not None:
+        command += ["--seed", str(args.seed)]
+    return subprocess.call(command)
+
+
+def run_server(args: argparse.Namespace) -> int:
+    model = _download_model(args.model_repo, args.model_file, Path(args.cache_dir))
+    binary = _find_binary(args.llama_server, ("llama-server", "server"))
+    command = [
+        binary,
+        "-m", str(model),
+        "--host", args.host,
+        "--port", str(args.port),
+        "-c", str(args.context),
+    ]
+    if args.gpu_layers is not None:
+        command += ["-ngl", str(args.gpu_layers)]
+    return subprocess.call(command)
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Run a local 13B GGUF model with llama.cpp")
+    p.add_argument("--model-repo", default=DEFAULT_REPO)
+    p.add_argument("--model-file", default=DEFAULT_FILE)
+    p.add_argument(
+        "--cache-dir",
+        default=os.path.expanduser("~/.cache/needle/models"),
+        help="Hugging Face model cache directory",
+    )
+    p.add_argument("--context", type=int, default=4096)
+    p.add_argument("--gpu-layers", type=int, default=0, help="Use 0 for CPU-only")
+    p.add_argument("--llama-cli", default=None)
+    p.add_argument("--llama-server", default=None)
+    sub = p.add_subparsers(dest="mode", required=True)
+
+    cli = sub.add_parser("chat", help="Generate one completion")
+    cli.add_argument("--prompt", required=True)
+    cli.add_argument("--max-tokens", type=int, default=512)
+    cli.add_argument("--temperature", type=float, default=0.2)
+    cli.add_argument("--seed", type=int, default=0)
+
+    server = sub.add_parser("server", help="Start an OpenAI-compatible llama.cpp server")
+    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--port", type=int, default=8080)
+    return p
+
+
+def main() -> int:
+    args = parser().parse_args()
+    if args.mode == "chat":
+        return run_cli(args)
+    return run_server(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
