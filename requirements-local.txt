@@ -1,2 +1,3 @@
-# Optional dependencies for the local 13B GGUF runner
+# Optional dependencies for local inference and dataset preparation
 huggingface_hub>=0.25
+datasets>=3.0
